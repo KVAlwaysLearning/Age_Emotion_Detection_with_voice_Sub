@@ -82,7 +82,7 @@ You can open `Age_Emotion_Detection_Voice_working.ipynb` in any Jupyter environm
 
 ## 🔗 Links
 
-* **Live App**: [Voice Analysis App](https://ageemotiondetectionwithvoice-app.streamlit.app/)
+* **Live App**: [Voice Analysis App](https://ageemotiondetectionwithvoicesub-app.streamlit.app/)
 * **GitHub Repo**: [Age & Emotion Detection Repository](https://github.com/KVAlwaysLearning/Age_Emotion_Detection_with_voice_Sub)
 
 ---
