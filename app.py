@@ -41,6 +41,7 @@ class InferenceWrapper(nn.Module):
 @st.cache_resource
 def setup_models():
     folder_id = '1Vw_CRVKAlsVikX-GQB1hvaxFnPuhWBKA'
+    folder_id =  "1AqPmnnIexWmEcp_IWBR1sCI4sGatxn-8"
     if not os.path.exists("./Models"):
         gdown.download_folder(id=folder_id, output='./Models', quiet=False)
     
