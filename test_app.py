@@ -2,7 +2,6 @@ import streamlit as st
 import os
 import gdown
 import librosa
-import numpy as np
 import torch
 import torch.nn as nn
 from transformers import Wav2Vec2Processor, pipeline
@@ -29,12 +28,12 @@ def setup_models():
     base_dir = "Models"
     if not os.path.exists(base_dir):
         os.makedirs(base_dir, exist_ok=True)
-        # Retrieve the secret ID
+        # Fetching Secret ID from Streamlit Cloud Dashboard
         folder_id = st.secrets["drive_ids"]["models_folder"]
         url = f"https://drive.google.com/drive/folders/{folder_id}"
         gdown.download_folder(url=url, output=base_dir, quiet=False)
     
-    # 2. PATH DISCOVERY (Moved OUTSIDE the 'if' block)
+    # 2. PATH DISCOVERY
     paths = {
         "processor": os.path.join(base_dir, "processor"),
         "age_model": os.path.join(base_dir, "age_model"),
@@ -42,14 +41,17 @@ def setup_models():
         "emotion_model": os.path.join(base_dir, "emotion_model")
     }
     
-    # 3. INITIALIZE PIPELINES
-    processor = Wav2Vec2Processor.from_pretrained(paths["processor"])
-    # Ensure model.pth exists in the path
+    # 3. INITIALIZE MODELS
+    # Added local_files_only=True to prevent Hugging Face Hub connectivity errors
+    processor = Wav2Vec2Processor.from_pretrained(paths["processor"], local_files_only=True)
+    
+    # Load custom age model and ensure CPU compatibility
     age_model = torch.load(os.path.join(paths["age_model"], "model.pth"), map_location=torch.device('cpu'))
     age_model.eval()
             
-    gender_pipe = pipeline("audio-classification", model=paths["gender_model"])
-    emotion_pipe = pipeline("audio-classification", model=paths["emotion_model"])
+    # Initialize pipelines with local override
+    gender_pipe = pipeline("audio-classification", model=paths["gender_model"], local_files_only=True)
+    emotion_pipe = pipeline("audio-classification", model=paths["emotion_model"], local_files_only=True)
             
     return processor, age_model, gender_pipe, emotion_pipe
 
@@ -63,27 +65,26 @@ if uploaded_file:
     st.audio(uploaded_file, format='audio/wav')
     y, sr = librosa.load(uploaded_file, sr=16000)
     
-    # 1. Gender check using pipeline
+    # Gender check
     gender_results = gender_pipe(y)
     gender_label = gender_results[0]['label'].lower()
     
     if 'female' in gender_label:
         st.error("Upload a male voice note.")
     else:
-        # 2. Age Prediction
+        # Age Prediction
         inputs = processor(y, sampling_rate=16000, return_tensors="pt")
         input_values = inputs.input_values.to(torch.float32)
         
         with torch.no_grad():
-            # Adjust depending on your InferenceWrapper output
             logits_age = age_model(input_values)
-            # If your model returns a tuple, access the first element
+            # Handle model output structure
             if isinstance(logits_age, tuple):
                 logits_age = logits_age[0]
         
         age = int(logits_age.item() * 100)
         
-        # 3. Logic
+        # Logic orchestration
         if age <= 0:
             st.warning("Could not clearly detect age.")
         elif age > 60:
