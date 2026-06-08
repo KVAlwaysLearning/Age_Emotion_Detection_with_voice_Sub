@@ -2,6 +2,7 @@ import streamlit as st
 import os
 import gdown
 import librosa
+import numpy as np
 import torch
 import torch.nn as nn
 from transformers import Wav2Vec2Processor, AutoModel, pipeline
@@ -29,6 +30,7 @@ class InferenceWrapper(nn.Module):
         self.gender = gender_h
     
     def forward(self, input_values):
+        # Extract features from the base Wav2Vec2 model
         outputs = self.wav2vec2(input_values)
         hidden_states = torch.mean(outputs.last_hidden_state, dim=1)
         age_logits = self.age(hidden_states)
@@ -38,15 +40,14 @@ class InferenceWrapper(nn.Module):
 # --- 2. SETUP & DOWNLOAD ---
 @st.cache_resource
 def setup_models():
-    # Retrieve the folder ID securely from Streamlit Secrets
-    folder_id = st.secrets["drive_ids"]["models_folder"]
-    
+    #folder_id = '1Vw_CRVKAlsVikX-GQB1hvaxFnPuhWBKA'
+    folder_id =  "1AqPmnnIexWmEcp_IWBR1sCI4sGatxn-8"
     if not os.path.exists("./Models"):
         gdown.download_folder(id=folder_id, output='./Models', quiet=False)
     
     model_path = "./Models/age_model"
     
-    # Load processor and base model
+    # Load processor and base model forced to float32
     processor = Wav2Vec2Processor.from_pretrained(model_path)
     base_model = AutoModel.from_pretrained(model_path, torch_dtype=torch.float32)
     
@@ -74,12 +75,14 @@ if uploaded_file:
     st.audio(uploaded_file, format='audio/wav')
     y, sr = librosa.load(uploaded_file, sr=16000)
     
+    # 1. Gender check using pipeline
     gender_results = gender_pipe(y)
     gender_label = gender_results[0]['label'].lower()
     
     if 'female' in gender_label:
         st.error("Upload a male voice note.")
     else:
+        # 2. Age Prediction using Custom Model
         inputs = processor(y, sampling_rate=16000, return_tensors="pt")
         input_values = inputs.input_values.to(torch.float32)
         
@@ -88,6 +91,7 @@ if uploaded_file:
         
         age = int(logits_age.item() * 100)
         
+        # 3. Logic
         if age <= 0:
             st.warning("Could not clearly detect age.")
         elif age > 60:
