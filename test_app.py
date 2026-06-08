@@ -4,7 +4,7 @@ import gdown
 import librosa
 import torch
 import torch.nn as nn
-from transformers import Wav2Vec2Processor, pipeline
+from transformers import Wav2Vec2Processor, AutoModel, pipeline
 
 # --- 1. MODEL DEFINITIONS ---
 class ModelHead(nn.Module):
@@ -21,38 +21,47 @@ class ModelHead(nn.Module):
         x = self.dropout(x)
         return self.out_proj(x)
 
+class InferenceWrapper(nn.Module):
+    def __init__(self, base, age_h, gender_h):
+        super().__init__()
+        self.wav2vec2 = base
+        self.age = age_h
+        self.gender = gender_h
+    
+    def forward(self, input_values):
+        outputs = self.wav2vec2(input_values)
+        hidden_states = torch.mean(outputs.last_hidden_state, dim=1)
+        age_logits = self.age(hidden_states)
+        gender_logits = torch.softmax(self.gender(hidden_states), dim=1)
+        return age_logits, gender_logits
+
 # --- 2. SETUP & DOWNLOAD ---
 @st.cache_resource
 def setup_models():
-    # 1. SETUP DIRECTORIES
-    base_dir = "Models"
-    if not os.path.exists(base_dir):
-        os.makedirs(base_dir, exist_ok=True)
-        # Fetching Secret ID from Streamlit Cloud Dashboard
-        folder_id = st.secrets["drive_ids"]["models_folder"]
-        url = f"https://drive.google.com/drive/folders/{folder_id}"
-        gdown.download_folder(url=url, output=base_dir, quiet=False)
+    # Retrieve the folder ID securely from Streamlit Secrets
+    folder_id = st.secrets["drive_ids"]["models_folder"]
     
-    # 2. PATH DISCOVERY
-    paths = {
-        "processor": os.path.join(base_dir, "processor"),
-        "age_model": os.path.join(base_dir, "age_model"),
-        "gender_model": os.path.join(base_dir, "gender_model"),
-        "emotion_model": os.path.join(base_dir, "emotion_model")
-    }
+    if not os.path.exists("./Models"):
+        gdown.download_folder(id=folder_id, output='./Models', quiet=False)
     
-    # 3. INITIALIZE MODELS
-    # Added local_files_only=True to prevent Hugging Face Hub connectivity errors
-    processor = Wav2Vec2Processor.from_pretrained(paths["processor"], local_files_only=True)
+    model_path = "./Models/age_model"
     
-    # Load custom age model and ensure CPU compatibility
-    age_model = torch.load(os.path.join(paths["age_model"], "model.pth"), map_location=torch.device('cpu'))
+    # Load processor and base model
+    processor = Wav2Vec2Processor.from_pretrained(model_path)
+    base_model = AutoModel.from_pretrained(model_path, torch_dtype=torch.float32)
+    
+    # Initialize and cast heads to float32
+    age_head = ModelHead(base_model.config, 1).to(torch.float32)
+    gender_head = ModelHead(base_model.config, 3).to(torch.float32)
+    
+    # Wrap and set to evaluation mode
+    age_model = InferenceWrapper(base_model, age_head, gender_head)
     age_model.eval()
-            
-    # Initialize pipelines with local override
-    gender_pipe = pipeline("audio-classification", model=paths["gender_model"], local_files_only=True)
-    emotion_pipe = pipeline("audio-classification", model=paths["emotion_model"], local_files_only=True)
-            
+    
+    # Load separate pipelines
+    gender_pipe = pipeline("audio-classification", model="./Models/gender_model")
+    emotion_pipe = pipeline("audio-classification", model="./Models/emotion_model")
+    
     return processor, age_model, gender_pipe, emotion_pipe
 
 # --- 3. STREAMLIT INTERFACE ---
@@ -65,26 +74,20 @@ if uploaded_file:
     st.audio(uploaded_file, format='audio/wav')
     y, sr = librosa.load(uploaded_file, sr=16000)
     
-    # Gender check
     gender_results = gender_pipe(y)
     gender_label = gender_results[0]['label'].lower()
     
     if 'female' in gender_label:
         st.error("Upload a male voice note.")
     else:
-        # Age Prediction
         inputs = processor(y, sampling_rate=16000, return_tensors="pt")
         input_values = inputs.input_values.to(torch.float32)
         
         with torch.no_grad():
-            logits_age = age_model(input_values)
-            # Handle model output structure
-            if isinstance(logits_age, tuple):
-                logits_age = logits_age[0]
+            logits_age, _ = age_model(input_values)
         
         age = int(logits_age.item() * 100)
         
-        # Logic orchestration
         if age <= 0:
             st.warning("Could not clearly detect age.")
         elif age > 60:
