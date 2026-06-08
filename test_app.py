@@ -5,7 +5,7 @@ import librosa
 import numpy as np
 import torch
 import torch.nn as nn
-from transformers import Wav2Vec2Processor, AutoModel, pipeline
+from transformers import Wav2Vec2Processor, pipeline
 
 # --- 1. MODEL DEFINITIONS ---
 class ModelHead(nn.Module):
@@ -22,27 +22,11 @@ class ModelHead(nn.Module):
         x = self.dropout(x)
         return self.out_proj(x)
 
-class InferenceWrapper(nn.Module):
-    def __init__(self, base, age_h, gender_h):
-        super().__init__()
-        self.wav2vec2 = base
-        self.age = age_h
-        self.gender = gender_h
-    
-    def forward(self, input_values):
-        # Extract features from the base Wav2Vec2 model
-        outputs = self.wav2vec2(input_values)
-        hidden_states = torch.mean(outputs.last_hidden_state, dim=1)
-        age_logits = self.age(hidden_states)
-        gender_logits = torch.softmax(self.gender(hidden_states), dim=1)
-        return age_logits, gender_logits
-
 # --- 2. SETUP & DOWNLOAD ---
 @st.cache_resource
 def setup_models():
     # 1. SETUP DIRECTORIES
     base_dir = "Models"
-    
     if not os.path.exists(base_dir):
         os.makedirs(base_dir, exist_ok=True)
         # Retrieve the secret ID
@@ -50,19 +34,19 @@ def setup_models():
         url = f"https://drive.google.com/drive/folders/{folder_id}"
         gdown.download_folder(url=url, output=base_dir, quiet=False)
     
-        # 2. PATH DISCOVERY
-        # Centralizing paths using os.path.join for cloud reliability
+    # 2. PATH DISCOVERY (Moved OUTSIDE the 'if' block)
     paths = {
-                "processor": os.path.join(base_dir, "processor"),
-                "age_model": os.path.join(base_dir, "age_model"),
-                "gender_model": os.path.join(base_dir, "gender_model"),
-                "emotion_model": os.path.join(base_dir, "emotion_model")
-            }
-        
-        # 3. INITIALIZE PIPELINES
+        "processor": os.path.join(base_dir, "processor"),
+        "age_model": os.path.join(base_dir, "age_model"),
+        "gender_model": os.path.join(base_dir, "gender_model"),
+        "emotion_model": os.path.join(base_dir, "emotion_model")
+    }
+    
+    # 3. INITIALIZE PIPELINES
     processor = Wav2Vec2Processor.from_pretrained(paths["processor"])
-        # Assuming your custom model class 'InferenceWrapper' loads from the saved path
-    age_model = torch.load(os.path.join(paths["age_model"], "model.pth"))
+    # Ensure model.pth exists in the path
+    age_model = torch.load(os.path.join(paths["age_model"], "model.pth"), map_location=torch.device('cpu'))
+    age_model.eval()
             
     gender_pipe = pipeline("audio-classification", model=paths["gender_model"])
     emotion_pipe = pipeline("audio-classification", model=paths["emotion_model"])
@@ -86,12 +70,16 @@ if uploaded_file:
     if 'female' in gender_label:
         st.error("Upload a male voice note.")
     else:
-        # 2. Age Prediction using Custom Model
+        # 2. Age Prediction
         inputs = processor(y, sampling_rate=16000, return_tensors="pt")
         input_values = inputs.input_values.to(torch.float32)
         
         with torch.no_grad():
-            logits_age, _ = age_model(input_values)
+            # Adjust depending on your InferenceWrapper output
+            logits_age = age_model(input_values)
+            # If your model returns a tuple, access the first element
+            if isinstance(logits_age, tuple):
+                logits_age = logits_age[0]
         
         age = int(logits_age.item() * 100)
         
